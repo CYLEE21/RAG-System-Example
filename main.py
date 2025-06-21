@@ -2,6 +2,8 @@ from dotenv import load_dotenv
 import os
 
 from llama_index.core import VectorStoreIndex, Settings, PromptTemplate
+from llama_index.core.llms import ChatMessage
+from llama_index.core.memory import Memory
 from llama_index.embeddings.gemini import GeminiEmbedding
 from llama_index.llms.gemini import Gemini
 from llama_index.vector_stores.qdrant import QdrantVectorStore
@@ -75,13 +77,17 @@ vector_store = QdrantVectorStore(client=qdrant_client, collection_name=COLLECTIO
 # Create a VectorStoreIndex from the documents
 index = VectorStoreIndex.from_vector_store(vector_store=vector_store)
 # Query the index
-query_engine = index.as_query_engine(similarity_top_k=10, text_qa_template=query_prompt_template)
 
 # TODO: build up the memory for chatbot
 
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "memory" not in st.session_state:
+    st.session_state.memory = Memory.from_defaults(session_id="my_session", token_limit=40000)
+
+# memory var should be out side of the if statement.
+memory = st.session_state.memory
 
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
@@ -91,12 +97,21 @@ if prompt := st.chat_input("Ask me something..."):
     with st.chat_message(name="user"):
         st.markdown(prompt)
     st.session_state.messages.append({"role":"user", "content":prompt})
-
+    
     # rephrase the prompt.
     rephrased_prompt = gemini.complete(prompt=rephrase_prompt.format(prompt=prompt))
+    # using as_chat_engine rather than as_query_engine
+    chat_engine = index.as_chat_engine(chat_mode="context", similarity_top_k=10, text_qa_template=query_prompt_template, memory=memory)
+    
+    response = chat_engine.chat(rephrased_prompt.text)
 
-    response = query_engine.query(rephrased_prompt.text)
-
-    with st.chat_message(name="assistent"):
-        st.markdown(response)
-    st.session_state.messages.append({"role":"assistent", "content":response})
+    with st.chat_message(name="assistant"):
+        st.markdown(response) #<class 'llama_index.core.chat_engine.types.AgentChatResponse'>
+        
+        st.session_state.messages.append({"role":"assistant", "content":response})
+        chat_history = [
+            ChatMessage(role="user", content=rephrased_prompt.text),
+            ChatMessage(role="assistant", content=str(response))
+        ]
+        memory.put_messages(chat_history)
+        #print("here is after", memory.get())
